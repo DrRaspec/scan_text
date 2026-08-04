@@ -64,7 +64,7 @@ class CameraService {
 
     controller = CameraController(
       selectedCamera,
-      ResolutionPreset.medium,
+      ResolutionPreset.high,
       enableAudio: false,
       imageFormatGroup: Platform.isAndroid
           ? ImageFormatGroup.nv21

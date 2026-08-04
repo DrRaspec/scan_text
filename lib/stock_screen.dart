@@ -69,24 +69,49 @@ class _StockScreenState extends State<StockScreen> {
   }
 
   String? _extractStockCandidate(String scannedText) {
-    final normalized = scannedText
+    var normalizedText = scannedText
         .trim()
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .replaceAll('-', ' ');
+        .replaceAll('-', ' ')
+        .replaceAllMapped(
+          RegExp(r'\(([^)]*)\)'),
+          (match) => ' ${match.group(1)} ',
+        );
 
-    final parts = normalized.split(' ').where((part) => part.isNotEmpty);
+    String? detectedTransport;
 
-    final codePattern = RegExp(r'^[0-9](?=.*[A-Za-z])[A-Za-z0-9]*$');
-
-    for (final part in parts) {
-      if (codePattern.hasMatch(part)) {
-        // Return the complete text so transport can still be extracted.
-        return scannedText;
+    // Detect and remove transport text first. This separates:
+    // "20901HSB海运" -> "20901HSB"
+    for (final entry in transportPatterns.entries) {
+      if (entry.value.hasMatch(normalizedText)) {
+        detectedTransport = entry.key;
+        normalizedText = normalizedText.replaceAll(entry.value, ' ');
+        break;
       }
     }
 
-    // Returning null tells the scanner to continue scanning.
-    return null;
+    // Remove punctuation and OCR border artifacts such as |, [, ], (, ).
+    normalizedText = normalizedText
+        .replaceAll(RegExp(r'[^A-Za-z0-9\s]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+
+    final codePattern = RegExp(r'^[0-9](?=.*[A-Za-z])[A-Za-z0-9]*$');
+
+    String? code;
+
+    for (final part in normalizedText.split(' ')) {
+      if (codePattern.hasMatch(part)) {
+        code = part.toUpperCase();
+        break;
+      }
+    }
+
+    if (code == null) {
+      return null;
+    }
+
+    // Returning only relevant data makes the two-frame comparison stable.
+    return [code, ?detectedTransport].join(' ');
   }
 
   @override
