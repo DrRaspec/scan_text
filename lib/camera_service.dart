@@ -2,8 +2,11 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:camera/camera.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+
+typedef ScanCandidateExtractor = String? Function(String recognizedText);
 
 class CameraService {
   CameraService._();
@@ -15,8 +18,38 @@ class CameraService {
 
   bool _isProcessing = false;
 
+  final Map<TextRecognitionScript, TextRecognizer> _recognizers = {};
+
+  TextRecognizer _getRecognizer(TextRecognitionScript script) {
+    return _recognizers.putIfAbsent(
+      script,
+      () => TextRecognizer(script: script),
+    );
+  }
+
   Future<void> initialize() async {
     _cameras = await availableCameras();
+  }
+
+  Future<void>? _cameraConfiguration;
+
+  Future<void> _configureCamera(CameraController cameraController) async {
+    try {
+      await cameraController.setFocusMode(FocusMode.auto);
+      await cameraController.setExposureMode(ExposureMode.auto);
+      await cameraController.setFocusPoint(const Offset(0.5, 0.5));
+      await cameraController.setExposurePoint(const Offset(0.5, 0.5));
+    } on CameraException catch (error) {
+      debugPrint('Camera configuration error: ${error.description}');
+    }
+  }
+
+  Future<void> waitForCameraConfiguration() async {
+    final configuration = _cameraConfiguration;
+
+    if (configuration != null) {
+      await configuration;
+    }
   }
 
   Future<void> startCamera() async {
@@ -24,9 +57,14 @@ class CameraService {
       throw Exception('No cameras available');
     }
 
+    final selectedCamera = _cameras.firstWhere(
+      (camera) => camera.lensDirection == CameraLensDirection.back,
+      orElse: () => _cameras.first,
+    );
+
     controller = CameraController(
-      _cameras[0],
-      ResolutionPreset.high,
+      selectedCamera,
+      ResolutionPreset.medium,
       enableAudio: false,
       imageFormatGroup: Platform.isAndroid
           ? ImageFormatGroup.nv21
@@ -34,12 +72,13 @@ class CameraService {
     );
 
     await controller!.initialize();
-    await controller!.setFocusMode(FocusMode.auto);
-    await controller!.setExposureMode(ExposureMode.auto);
+
+    _cameraConfiguration = _configureCamera(controller!);
   }
 
   Future<String?> scanImage({
     TextRecognitionScript script = TextRecognitionScript.latin,
+    ScanCandidateExtractor? candidateExtractor,
   }) async {
     if (cameraIsInitialized() == false) {
       throw Exception('Camera is not initialized');
@@ -52,10 +91,13 @@ class CameraService {
     _isProcessing = true;
 
     final completer = Completer<String?>();
-    final recognizer = TextRecognizer(script: script);
+    final recognizer = _getRecognizer(script);
 
     bool processingFrame = false;
     bool textDetected = false;
+
+    String? previousCandidate;
+    int stableMatches = 0;
 
     await controller!.startImageStream((cameraImage) async {
       if (processingFrame || textDetected) return;
@@ -93,10 +135,37 @@ class CameraService {
             .join('\n')
             .trim();
 
-        if (text.isNotEmpty) {
-          textDetected = true;
-          await controller!.stopImageStream();
-          completer.complete(text);
+        final String? extractedCandidate = candidateExtractor == null
+            ? text
+            : candidateExtractor(text);
+
+        if (extractedCandidate == null || extractedCandidate.trim().isEmpty) {
+          return;
+        }
+
+        final candidate = extractedCandidate
+            .replaceAll(RegExp(r'\s+'), ' ')
+            .trim();
+
+        if (candidate.isEmpty) return;
+
+        final candidateKey = candidate.toUpperCase();
+
+        if (candidateKey == previousCandidate) {
+          stableMatches++;
+        } else {
+          previousCandidate = candidateKey;
+          stableMatches = 1;
+        }
+
+        // Wait until two processed frames give the same result.
+        if (stableMatches < 2) return;
+
+        textDetected = true;
+        await controller!.stopImageStream();
+
+        if (!completer.isCompleted) {
+          completer.complete(candidate);
         }
       } catch (error, stackTrace) {
         if (!completer.isCompleted) {
@@ -115,7 +184,6 @@ class CameraService {
         await controller!.stopImageStream();
       }
 
-      await recognizer.close();
       _isProcessing = false;
     }
   }
@@ -138,8 +206,20 @@ class CameraService {
   }
 
   Future<void> stopCamera() async {
+    await waitForCameraConfiguration();
+    _cameraConfiguration = null;
+
+    if (controller?.value.isStreamingImages ?? false) {
+      await controller!.stopImageStream();
+    }
+
     await controller?.dispose();
     controller = null;
+
+    for (final recognizer in _recognizers.values) {
+      await recognizer.close();
+    }
+    _recognizers.clear();
   }
 
   bool hasInitialize() {

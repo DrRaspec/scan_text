@@ -8,9 +8,11 @@ class ScanScreen extends StatefulWidget {
   const ScanScreen({
     super.key,
     this.scriptLanguage = TextRecognitionScript.latin,
+    this.candidateExtractor,
   });
 
   final TextRecognitionScript scriptLanguage;
+  final ScanCandidateExtractor? candidateExtractor;
 
   @override
   State<ScanScreen> createState() => _ScanScreenState();
@@ -49,6 +51,11 @@ class _ScanScreenState extends State<ScanScreen> {
       if (hasCameraPermission && CameraService.instance.controller == null) {
         await CameraService.instance.startCamera();
         Future.delayed(const Duration(seconds: 3), () async {
+          if (!mounted) return;
+
+          await CameraService.instance.waitForCameraConfiguration();
+
+          if (!mounted) return;
           await startScanning();
         });
       }
@@ -69,7 +76,9 @@ class _ScanScreenState extends State<ScanScreen> {
     try {
       final scannedText = await CameraService.instance.scanImage(
         script: widget.scriptLanguage,
+        candidateExtractor: widget.candidateExtractor,
       );
+
       debugPrint('Scanned text: $scannedText');
       if (scannedText != null) {
         if (!mounted) return;
@@ -129,34 +138,28 @@ class _ScanScreenState extends State<ScanScreen> {
         child: hasCameraPermission
             ? CameraService.instance.controller != null &&
                       CameraService.instance.controller!.value.isInitialized
-                  ? Stack(
-                      // fit: StackFit.expand,
-                      children: [
-                        CameraPreview(CameraService.instance.controller!),
-                        ColoredBox(
-                          color: Colors.black,
+                  ? ColoredBox(
+                      color: Colors.black,
+                      child: Center(
+                        child: CameraPreview(
+                          CameraService.instance.controller!,
                           child: Center(
-                            child: CameraPreview(
-                              CameraService.instance.controller!,
-                              child: Center(
-                                child: FractionallySizedBox(
-                                  widthFactor: 0.80,
-                                  heightFactor: 0.40,
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      border: Border.all(
-                                        color: Colors.green,
-                                        width: 3,
-                                      ),
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
+                            child: FractionallySizedBox(
+                              widthFactor: 0.80,
+                              heightFactor: 0.40,
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  border: Border.all(
+                                    color: Colors.green,
+                                    width: 3,
                                   ),
+                                  borderRadius: BorderRadius.circular(12),
                                 ),
                               ),
                             ),
                           ),
                         ),
-                      ],
+                      ),
                     )
                   : const Center(child: CircularProgressIndicator())
             : const Center(child: Text('Camera permission denied')),

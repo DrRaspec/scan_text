@@ -63,13 +63,30 @@ class _StockScreenState extends State<StockScreen> {
       }
     }
 
-    if (code.isEmpty && parts.isNotEmpty) {
-      code = parts.first;
-    }
-
     _codeController.text = code;
     // _codeController.text = parts.isEmpty ? '' : parts.first;
     _transportController.text = detectedTransport ?? '';
+  }
+
+  String? _extractStockCandidate(String scannedText) {
+    final normalized = scannedText
+        .trim()
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .replaceAll('-', ' ');
+
+    final parts = normalized.split(' ').where((part) => part.isNotEmpty);
+
+    final codePattern = RegExp(r'^[0-9](?=.*[A-Za-z])[A-Za-z0-9]*$');
+
+    for (final part in parts) {
+      if (codePattern.hasMatch(part)) {
+        // Return the complete text so transport can still be extracted.
+        return scannedText;
+      }
+    }
+
+    // Returning null tells the scanner to continue scanning.
+    return null;
   }
 
   @override
@@ -103,8 +120,9 @@ class _StockScreenState extends State<StockScreen> {
                       final result = await Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (context) => const ScanScreen(
+                          builder: (context) => ScanScreen(
                             scriptLanguage: TextRecognitionScript.chinese,
+                            candidateExtractor: _extractStockCandidate,
                           ),
                         ),
                       );
@@ -128,8 +146,9 @@ class _StockScreenState extends State<StockScreen> {
                       final result = await Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (context) => const ScanScreen(
+                          builder: (context) => ScanScreen(
                             scriptLanguage: TextRecognitionScript.chinese,
+                            candidateExtractor: _extractStockCandidate,
                           ),
                         ),
                       );
