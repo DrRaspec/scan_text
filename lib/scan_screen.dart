@@ -18,6 +18,7 @@ class ScanScreen extends StatefulWidget {
 
 class _ScanScreenState extends State<ScanScreen> {
   bool hasCameraPermission = false;
+  bool isInitializingCamera = false;
 
   @override
   void initState() {
@@ -25,14 +26,24 @@ class _ScanScreenState extends State<ScanScreen> {
     startCamera();
   }
 
+  void setInitializingCamera(bool isInitializing) {
+    setState(() {
+      isInitializingCamera = isInitializing;
+    });
+  }
+
   void startCamera() async {
+    if (isInitializingCamera) return;
+
     final status = await Permission.camera.request();
 
     hasCameraPermission = status == PermissionStatus.granted;
 
+    setInitializingCamera(true);
     if (!CameraService.instance.hasInitialize()) {
       await CameraService.instance.initialize();
     }
+    setInitializingCamera(false);
 
     try {
       if (hasCameraPermission && CameraService.instance.controller == null) {
