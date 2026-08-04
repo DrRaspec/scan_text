@@ -174,6 +174,7 @@ class _StockScreenState extends State<StockScreen> {
                           builder: (context) => ScanScreen(
                             scriptLanguage: TextRecognitionScript.chinese,
                             candidateExtractor: _extractStockCandidate,
+                            requiredStableMatches: 1,
                           ),
                         ),
                       );

@@ -79,6 +79,7 @@ class CameraService {
   Future<String?> scanImage({
     TextRecognitionScript script = TextRecognitionScript.latin,
     ScanCandidateExtractor? candidateExtractor,
+    int requiredStableMatches = 2,
   }) async {
     if (cameraIsInitialized() == false) {
       throw Exception('Camera is not initialized');
@@ -158,8 +159,8 @@ class CameraService {
           stableMatches = 1;
         }
 
-        // Wait until two processed frames give the same result.
-        if (stableMatches < 2) return;
+        // Wait until the required number of processed frames give the same result.
+        if (stableMatches < requiredStableMatches) return;
 
         textDetected = true;
         await controller!.stopImageStream();

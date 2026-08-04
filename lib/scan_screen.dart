@@ -9,10 +9,12 @@ class ScanScreen extends StatefulWidget {
     super.key,
     this.scriptLanguage = TextRecognitionScript.latin,
     this.candidateExtractor,
+    this.requiredStableMatches = 2,
   });
 
   final TextRecognitionScript scriptLanguage;
   final ScanCandidateExtractor? candidateExtractor;
+  final int requiredStableMatches;
 
   @override
   State<ScanScreen> createState() => _ScanScreenState();
@@ -77,6 +79,7 @@ class _ScanScreenState extends State<ScanScreen> {
       final scannedText = await CameraService.instance.scanImage(
         script: widget.scriptLanguage,
         candidateExtractor: widget.candidateExtractor,
+        requiredStableMatches: widget.requiredStableMatches,
       );
 
       debugPrint('Scanned text: $scannedText');
