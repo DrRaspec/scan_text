@@ -63,13 +63,55 @@ class _StockScreenState extends State<StockScreen> {
       }
     }
 
-    if (code.isEmpty && parts.isNotEmpty) {
-      code = parts.first;
-    }
-
     _codeController.text = code;
     // _codeController.text = parts.isEmpty ? '' : parts.first;
     _transportController.text = detectedTransport ?? '';
+  }
+
+  String? _extractStockCandidate(String scannedText) {
+    var normalizedText = scannedText
+        .trim()
+        .replaceAll('-', ' ')
+        .replaceAllMapped(
+          RegExp(r'\(([^)]*)\)'),
+          (match) => ' ${match.group(1)} ',
+        );
+
+    String? detectedTransport;
+
+    // Detect and remove transport text first. This separates:
+    // "20901HSB海运" -> "20901HSB"
+    for (final entry in transportPatterns.entries) {
+      if (entry.value.hasMatch(normalizedText)) {
+        detectedTransport = entry.key;
+        normalizedText = normalizedText.replaceAll(entry.value, ' ');
+        break;
+      }
+    }
+
+    // Remove punctuation and OCR border artifacts such as |, [, ], (, ).
+    normalizedText = normalizedText
+        .replaceAll(RegExp(r'[^A-Za-z0-9\s]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+
+    final codePattern = RegExp(r'^[0-9](?=.*[A-Za-z])[A-Za-z0-9]*$');
+
+    String? code;
+
+    for (final part in normalizedText.split(' ')) {
+      if (codePattern.hasMatch(part)) {
+        code = part.toUpperCase();
+        break;
+      }
+    }
+
+    if (code == null) {
+      return null;
+    }
+
+    // Returning only relevant data makes the two-frame comparison stable.
+    return [code, ?detectedTransport].join(' ');
   }
 
   @override
@@ -103,8 +145,9 @@ class _StockScreenState extends State<StockScreen> {
                       final result = await Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (context) => const ScanScreen(
+                          builder: (context) => ScanScreen(
                             scriptLanguage: TextRecognitionScript.chinese,
+                            candidateExtractor: _extractStockCandidate,
                           ),
                         ),
                       );
@@ -128,8 +171,10 @@ class _StockScreenState extends State<StockScreen> {
                       final result = await Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (context) => const ScanScreen(
+                          builder: (context) => ScanScreen(
                             scriptLanguage: TextRecognitionScript.chinese,
+                            candidateExtractor: _extractStockCandidate,
+                            requiredStableMatches: 1,
                           ),
                         ),
                       );
