@@ -17,6 +17,10 @@ class CameraService {
   CameraController? controller;
 
   bool _isProcessing = false;
+  _ScanSession? _activeScan;
+  Future<void>? _stopOperation;
+
+  static final RegExp _whitespacePattern = RegExp(r'\s+');
 
   final Map<TextRecognitionScript, TextRecognizer> _recognizers = {};
 
@@ -53,6 +57,10 @@ class CameraService {
   }
 
   Future<void> startCamera() async {
+    await _stopOperation;
+
+    if (cameraIsInitialized()) return;
+
     if (_cameras.isEmpty) {
       throw Exception('No cameras available');
     }
@@ -66,6 +74,9 @@ class CameraService {
       selectedCamera,
       ResolutionPreset.high,
       enableAudio: false,
+      // ML Kit takes longer than one camera frame to process an image. A high
+      // frame rate only creates frames that are dropped by [processingFrame].
+      fps: 15,
       imageFormatGroup: Platform.isAndroid
           ? ImageFormatGroup.nv21
           : ImageFormatGroup.bgra8888,
@@ -91,107 +102,130 @@ class CameraService {
 
     _isProcessing = true;
 
-    final completer = Completer<String?>();
+    final session = _ScanSession();
+    _activeScan = session;
     final recognizer = _getRecognizer(script);
-
-    bool processingFrame = false;
-    bool textDetected = false;
 
     String? previousCandidate;
     int stableMatches = 0;
 
-    await controller!.startImageStream((cameraImage) async {
-      if (processingFrame || textDetected) return;
-
-      processingFrame = true;
-
-      try {
-        final inputImage = convertCameraImage(cameraImage);
-        if (inputImage == null) return;
-
-        final metadata = inputImage.metadata!;
-        final rotation = metadata.rotation;
-        final rawSize = metadata.size;
-
-        final isSideways =
-            rotation == InputImageRotation.rotation90deg ||
-            rotation == InputImageRotation.rotation270deg;
-
-        final imageSize = Platform.isAndroid && isSideways
-            ? Size(rawSize.height, rawSize.width)
-            : rawSize;
-
-        final result = await recognizer.processImage(inputImage);
-
-        final scanArea = Rect.fromCenter(
-          center: Offset(imageSize.width / 2, imageSize.height / 2),
-          width: imageSize.width * 0.80,
-          height: imageSize.height * 0.40,
-        );
-
-        final text = result.blocks
-            .expand((block) => block.lines)
-            .where((line) => scanArea.contains(line.boundingBox.center))
-            .map((line) => line.text)
-            .join('\n')
-            .trim();
-
-        final String? extractedCandidate = candidateExtractor == null
-            ? text
-            : candidateExtractor(text);
-
-        if (extractedCandidate == null || extractedCandidate.trim().isEmpty) {
+    try {
+      await controller!.startImageStream((cameraImage) async {
+        if (session.processingFrame ||
+            session.textDetected ||
+            session.cancelled) {
           return;
         }
 
-        final candidate = extractedCandidate
-            .replaceAll(RegExp(r'\s+'), ' ')
-            .trim();
+        session.processingFrame = true;
+        final frameFinished = Completer<void>();
+        session.frameFinished = frameFinished;
 
-        if (candidate.isEmpty) return;
+        try {
+          final inputImage = convertCameraImage(cameraImage);
+          if (inputImage == null) return;
 
-        final candidateKey = candidate.toUpperCase();
+          final metadata = inputImage.metadata!;
+          final rotation = metadata.rotation;
+          final rawSize = metadata.size;
 
-        if (candidateKey == previousCandidate) {
-          stableMatches++;
-        } else {
-          previousCandidate = candidateKey;
-          stableMatches = 1;
+          final isSideways =
+              rotation == InputImageRotation.rotation90deg ||
+              rotation == InputImageRotation.rotation270deg;
+
+          final imageSize = Platform.isAndroid && isSideways
+              ? Size(rawSize.height, rawSize.width)
+              : rawSize;
+
+          final result = await recognizer.processImage(inputImage);
+
+          if (session.cancelled) return;
+
+          final scanArea = Rect.fromCenter(
+            center: Offset(imageSize.width / 2, imageSize.height / 2),
+            width: imageSize.width * 0.80,
+            height: imageSize.height * 0.40,
+          );
+
+          final text = result.blocks
+              .expand((block) => block.lines)
+              .where((line) => scanArea.contains(line.boundingBox.center))
+              .map((line) => line.text)
+              .join('\n')
+              .trim();
+
+          final candidate = _extractCandidate(text, candidateExtractor);
+          if (candidate == null) return;
+
+          final candidateKey = candidate.toUpperCase();
+
+          if (candidateKey == previousCandidate) {
+            stableMatches++;
+          } else {
+            previousCandidate = candidateKey;
+            stableMatches = 1;
+          }
+
+          if (stableMatches < requiredStableMatches) return;
+
+          session.textDetected = true;
+          await controller!.stopImageStream();
+
+          if (!session.completer.isCompleted) {
+            session.completer.complete(candidate);
+          }
+        } catch (error, stackTrace) {
+          if (!session.cancelled && !session.completer.isCompleted) {
+            session.completer.completeError(error, stackTrace);
+          }
+        } finally {
+          session.processingFrame = false;
+          frameFinished.complete();
         }
+      });
 
-        // Wait until the required number of processed frames give the same result.
-        if (stableMatches < requiredStableMatches) return;
-
-        textDetected = true;
-        await controller!.stopImageStream();
-
-        if (!completer.isCompleted) {
-          completer.complete(candidate);
-        }
-      } catch (error, stackTrace) {
-        if (!completer.isCompleted) {
-          completer.completeError(error, stackTrace);
-        }
-      } finally {
-        processingFrame = false;
-      }
-    });
-
-    try {
-      final detectedText = await completer.future;
+      final detectedText = await session.completer.future;
       return detectedText?.trim();
     } finally {
-      if (controller?.value.isStreamingImages ?? false) {
-        await controller!.stopImageStream();
-      }
+      try {
+        final frameFinished = session.frameFinished;
+        if (frameFinished != null && !frameFinished.isCompleted) {
+          await frameFinished.future;
+        }
 
-      _isProcessing = false;
+        if (controller?.value.isStreamingImages ?? false) {
+          await controller!.stopImageStream();
+        }
+      } finally {
+        if (identical(_activeScan, session)) {
+          _activeScan = null;
+        }
+        _isProcessing = false;
+
+        if (!session.finished.isCompleted) {
+          session.finished.complete();
+        }
+      }
     }
+  }
+
+  Future<void> cancelScanning() async {
+    final session = _activeScan;
+    if (session == null) return;
+
+    session.cancelled = true;
+    if (!session.completer.isCompleted) {
+      session.completer.complete(null);
+    }
+    await session.finished.future;
   }
 
   Future<String?> captureImage({
     TextRecognitionScript script = TextRecognitionScript.latin,
+    ScanCandidateExtractor? candidateExtractor,
   }) async {
+    await cancelScanning();
+
     if (cameraIsInitialized() == false) {
       throw Exception('Camera is not initialized');
     }
@@ -200,13 +234,49 @@ class CameraService {
     final inputImage = InputImage.fromFilePath(image.path);
 
     final recognizer = TextRecognizer(script: script);
-    final result = await recognizer.processImage(inputImage);
-    await recognizer.close();
-
-    return result.text.trim();
+    try {
+      final result = await recognizer.processImage(inputImage);
+      return _extractCandidate(result.text, candidateExtractor);
+    } finally {
+      await recognizer.close();
+      try {
+        await File(image.path).delete();
+      } on FileSystemException catch (error) {
+        debugPrint('Could not delete temporary capture: $error');
+      }
+    }
   }
 
-  Future<void> stopCamera() async {
+  String? _extractCandidate(
+    String recognizedText,
+    ScanCandidateExtractor? candidateExtractor,
+  ) {
+    final extracted = candidateExtractor == null
+        ? recognizedText
+        : candidateExtractor(recognizedText);
+
+    if (extracted == null) return null;
+
+    final candidate = extracted.replaceAll(_whitespacePattern, ' ').trim();
+    return candidate.isEmpty ? null : candidate;
+  }
+
+  Future<void> stopCamera() {
+    final existingOperation = _stopOperation;
+    if (existingOperation != null) return existingOperation;
+
+    late final Future<void> operation;
+    operation = _stopCamera().whenComplete(() {
+      if (identical(_stopOperation, operation)) {
+        _stopOperation = null;
+      }
+    });
+    _stopOperation = operation;
+    return operation;
+  }
+
+  Future<void> _stopCamera() async {
+    await cancelScanning();
     await waitForCameraConfiguration();
     _cameraConfiguration = null;
 
@@ -300,4 +370,14 @@ class CameraService {
       ),
     );
   }
+}
+
+class _ScanSession {
+  final Completer<String?> completer = Completer<String?>();
+  final Completer<void> finished = Completer<void>();
+
+  Completer<void>? frameFinished;
+  bool processingFrame = false;
+  bool textDetected = false;
+  bool cancelled = false;
 }
