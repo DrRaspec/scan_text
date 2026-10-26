@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -231,18 +232,48 @@ class CameraService {
     }
 
     final image = await controller!.takePicture();
-    final inputImage = InputImage.fromFilePath(image.path);
-
-    final recognizer = TextRecognizer(script: script);
+    TextRecognizer? recognizer;
     try {
-      final result = await recognizer.processImage(inputImage);
-      return _extractCandidate(result.text, candidateExtractor);
-    } finally {
-      await recognizer.close();
+      final imageBytes = await image.readAsBytes();
+      final codec = await ui.instantiateImageCodec(imageBytes);
+      late final Size imageSize;
       try {
-        await File(image.path).delete();
-      } on FileSystemException catch (error) {
-        debugPrint('Could not delete temporary capture: $error');
+        final frame = await codec.getNextFrame();
+        try {
+          imageSize = Size(
+            frame.image.width.toDouble(),
+            frame.image.height.toDouble(),
+          );
+        } finally {
+          frame.image.dispose();
+        }
+      } finally {
+        codec.dispose();
+      }
+
+      final inputImage = InputImage.fromFilePath(image.path);
+      recognizer = TextRecognizer(script: script);
+      final result = await recognizer.processImage(inputImage);
+      final scanArea = Rect.fromCenter(
+        center: Offset(imageSize.width / 2, imageSize.height / 2),
+        width: imageSize.width * 0.80,
+        height: imageSize.height * 0.40,
+      );
+      final text = result.blocks
+          .expand((block) => block.lines)
+          .where((line) => scanArea.contains(line.boundingBox.center))
+          .map((line) => line.text)
+          .join('\n');
+      return _extractCandidate(text, candidateExtractor);
+    } finally {
+      try {
+        await recognizer?.close();
+      } finally {
+        try {
+          await File(image.path).delete();
+        } on FileSystemException catch (error) {
+          debugPrint('Could not delete temporary capture: $error');
+        }
       }
     }
   }
