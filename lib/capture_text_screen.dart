@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:scan_text/camera_service.dart';
@@ -22,6 +24,9 @@ class _CaptureTextScreenState extends State<CaptureTextScreen> {
   bool hasCameraPermission = false;
   bool isInitializingCamera = true;
   bool _isCapturing = false;
+  final _previewKey = GlobalKey();
+  ui.Image? _frozenPreview;
+  MemoryImage? _capturedImage;
   String? _cameraError;
   late final Future<void> _initialization;
   Future<void>? _captureOperation;
@@ -44,7 +49,8 @@ class _CaptureTextScreenState extends State<CaptureTextScreen> {
       }
       if (!mounted) return;
       await CameraService.instance.startCamera();
-      await CameraService.instance.waitForCameraConfiguration();
+      // Show the preview as soon as the camera is initialized. Focus and
+      // exposure configuration can finish while the user frames the text.
     } catch (error) {
       if (mounted) {
         _cameraError = 'Could not start the camera. Please reopen this screen.';
@@ -60,9 +66,32 @@ class _CaptureTextScreenState extends State<CaptureTextScreen> {
   Future<void> captureImage() async {
     if (!mounted || _isCapturing) return;
     setState(() => _isCapturing = true);
+    ui.Image? frozenPreview;
     try {
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return;
+      final boundary =
+          _previewKey.currentContext!.findRenderObject()
+              as RenderRepaintBoundary;
+      frozenPreview = await boundary.toImage();
+      if (!mounted) return;
+      setState(() => _frozenPreview = frozenPreview);
+      // Cover the native texture before pausing can detach its surface.
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return;
+      await CameraService.instance.controller?.pausePreview();
+      if (!mounted) return;
       final detectedText = await CameraService.instance.captureImage(
         script: widget.scriptLanguage,
+        onImageCaptured: (bytes) async {
+          if (!mounted) return;
+          final photo = MemoryImage(bytes);
+          await precacheImage(photo, context);
+          if (!mounted) return;
+          setState(() => _capturedImage = photo);
+          // Paint the captured photo before starting text recognition.
+          if (mounted) await WidgetsBinding.instance.endOfFrame;
+        },
       );
       if (!mounted) return;
       final hasText = detectedText != null && detectedText.isNotEmpty;
@@ -93,7 +122,31 @@ class _CaptureTextScreenState extends State<CaptureTextScreen> {
         );
       }
     } finally {
-      if (mounted) setState(() => _isCapturing = false);
+      if (mounted) {
+        try {
+          await CameraService.instance.controller?.resumePreview();
+          // Keep the still image covering the texture while preview reattaches.
+          if (mounted) await WidgetsBinding.instance.endOfFrame;
+        } catch (error) {
+          debugPrint('Could not resume camera preview: $error');
+          if (mounted) {
+            setState(
+              () => _cameraError =
+                  'Could not resume the camera. Please reopen this screen.',
+            );
+          }
+        } finally {
+          if (mounted) {
+            setState(() {
+              _capturedImage = null;
+              _frozenPreview = null;
+              _isCapturing = false;
+            });
+          }
+        }
+      }
+      if (mounted) await WidgetsBinding.instance.endOfFrame;
+      frozenPreview?.dispose();
     }
   }
 
@@ -123,22 +176,25 @@ class _CaptureTextScreenState extends State<CaptureTextScreen> {
                       CameraService.instance.controller!.value.isInitialized
                   ? Stack(
                       children: [
-                        ColoredBox(
-                          color: Colors.black,
-                          child: Center(
-                            child: CameraPreview(
-                              CameraService.instance.controller!,
-                              child: Center(
-                                child: FractionallySizedBox(
-                                  widthFactor: 0.80,
-                                  heightFactor: 0.40,
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      border: Border.all(
-                                        color: Colors.green,
-                                        width: 3,
+                        RepaintBoundary(
+                          key: _previewKey,
+                          child: ColoredBox(
+                            color: Colors.black,
+                            child: Center(
+                              child: CameraPreview(
+                                CameraService.instance.controller!,
+                                child: Center(
+                                  child: FractionallySizedBox(
+                                    widthFactor: 0.80,
+                                    heightFactor: 0.40,
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        border: Border.all(
+                                          color: Colors.green,
+                                          width: 3,
+                                        ),
+                                        borderRadius: BorderRadius.circular(12),
                                       ),
-                                      borderRadius: BorderRadius.circular(12),
                                     ),
                                   ),
                                 ),
@@ -146,7 +202,24 @@ class _CaptureTextScreenState extends State<CaptureTextScreen> {
                             ),
                           ),
                         ),
-
+                        if (_frozenPreview != null)
+                          Positioned.fill(
+                            child: RawImage(
+                              image: _frozenPreview,
+                              fit: BoxFit.contain,
+                            ),
+                          ),
+                        if (_capturedImage != null)
+                          Positioned.fill(
+                            child: ColoredBox(
+                              color: Colors.black,
+                              child: Image(
+                                image: _capturedImage!,
+                                fit: BoxFit.contain,
+                                gaplessPlayback: true,
+                              ),
+                            ),
+                          ),
                         Positioned(
                           bottom: 20,
                           left: 0,

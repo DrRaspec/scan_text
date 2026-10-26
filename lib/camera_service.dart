@@ -224,8 +224,10 @@ class CameraService {
   Future<String?> captureImage({
     TextRecognitionScript script = TextRecognitionScript.latin,
     ScanCandidateExtractor? candidateExtractor,
+    Future<void> Function(Uint8List bytes)? onImageCaptured,
   }) async {
     await cancelScanning();
+    await waitForCameraConfiguration();
 
     if (cameraIsInitialized() == false) {
       throw Exception('Camera is not initialized');
@@ -235,6 +237,7 @@ class CameraService {
     TextRecognizer? recognizer;
     try {
       final imageBytes = await image.readAsBytes();
+      await onImageCaptured?.call(imageBytes);
       final codec = await ui.instantiateImageCodec(imageBytes);
       late final Size imageSize;
       try {
